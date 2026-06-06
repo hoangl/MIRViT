@@ -15,7 +15,7 @@ from pytorch_grad_cam.utils.image import show_cam_on_image
 
 # Thiết lập thiết bị xử lý
 os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
-os.environ["HF_TOKEN"] = "hf_xxxxxxxxxxxx"
+os.environ["HF_TOKEN"] = "hf_xxx"
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # =====================================================================

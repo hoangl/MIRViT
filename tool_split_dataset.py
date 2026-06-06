@@ -3,84 +3,94 @@ import shutil
 import random
 
 
-def split_dataset(source_dir, dest_dir, split_ratio=0.8):
+def split_dataset(source_dir, dest_dir, train_ratio=0.8, val_ratio=0.1):
     """
-    Chia tập dữ liệu thành 2 tập train và test.
+    Chia tập dữ liệu thành 3 tập: train, validation và test.
 
     Tham số:
-    - source_dir: Đường dẫn tới thư mục chứa dữ liệu gốc (vd: 'kvasir-dataset-v2')
-    - dest_dir: Đường dẫn tới thư mục đích sẽ chứa 'train' và 'test'
-    - split_ratio: Tỷ lệ tập train (mặc định 0.8 tương đương 80%)
+    - source_dir: Đường dẫn tới thư mục chứa dữ liệu gốc
+    - dest_dir: Đường dẫn tới thư mục đích sẽ chứa 'train', 'val' và 'test'
+    - train_ratio: Tỷ lệ tập train (mặc định 0.8 tương đương 80%)
+    - val_ratio: Tỷ lệ tập validation (mặc định 0.1 tương đương 10%)
+    - Tỷ lệ tập test sẽ được tự động tính: 1.0 - train_ratio - val_ratio
     """
 
-    # Định nghĩa đường dẫn thư mục train và test mới
+    # Định nghĩa đường dẫn 3 thư mục mới
     train_dir = os.path.join(dest_dir, 'train')
+    val_dir = os.path.join(dest_dir, 'val')
     test_dir = os.path.join(dest_dir, 'test')
 
     # Lấy danh sách các thư mục con (các lớp bệnh lý)
     try:
         classes = [d for d in os.listdir(source_dir) if os.path.isdir(os.path.join(source_dir, d))]
     except FileNotFoundError:
-        print(f"[-] Không tìm thấy thư mục gốc: {source_dir}")
+        print(f"[-] LỖI: Không tìm thấy thư mục gốc '{source_dir}'")
         return
 
+    test_ratio = 1.0 - train_ratio - val_ratio
     print(f"[*] Bắt đầu chia dữ liệu. Tìm thấy {len(classes)} lớp bệnh lý.")
+    print(
+        f"[*] Tỷ lệ chia: Train {train_ratio * 100:.0f}% | Val {val_ratio * 100:.0f}% | Test {test_ratio * 100:.0f}%\n")
 
     for class_name in classes:
-        # Tạo đường dẫn đầy đủ tới thư mục của lớp hiện tại
+        # Tạo đường dẫn đầy đủ
         class_source_path = os.path.join(source_dir, class_name)
         class_train_path = os.path.join(train_dir, class_name)
+        class_val_path = os.path.join(val_dir, class_name)
         class_test_path = os.path.join(test_dir, class_name)
 
         # Khởi tạo thư mục đích nếu chưa có
         os.makedirs(class_train_path, exist_ok=True)
+        os.makedirs(class_val_path, exist_ok=True)
         os.makedirs(class_test_path, exist_ok=True)
 
         # Lấy danh sách toàn bộ file ảnh trong thư mục
         images = [f for f in os.listdir(class_source_path) if os.path.isfile(os.path.join(class_source_path, f))]
 
-        # Xáo trộn ngẫu nhiên danh sách ảnh
-        random.seed(42)  # Set seed để kết quả luôn cố định nếu chạy lại nhiều lần
+        # Xáo trộn ngẫu nhiên danh sách ảnh (Set seed 42 để cố định kết quả xáo trộn)
+        random.seed(42)
         random.shuffle(images)
 
-        # Tính toán điểm cắt chia tập (split point)
-        split_index = int(len(images) * split_ratio)
+        # Tính toán các mốc cắt (split points)
+        train_idx = int(len(images) * train_ratio)
+        val_idx = train_idx + int(len(images) * val_ratio)
 
-        # Phân tách danh sách
-        train_images = images[:split_index]
-        test_images = images[split_index:]
+        # Phân tách danh sách ảnh
+        train_images = images[:train_idx]
+        val_images = images[train_idx:val_idx]
+        test_images = images[val_idx:]
 
-        # Quá trình sao chép ảnh sang thư mục train
-        for img in train_images:
-            src_path = os.path.join(class_source_path, img)
-            dst_path = os.path.join(class_train_path, img)
-            shutil.copy2(src_path, dst_path)
+        # Hàm hỗ trợ sao chép file
+        def copy_files(file_list, dst_folder):
+            for img in file_list:
+                src_path = os.path.join(class_source_path, img)
+                dst_path = os.path.join(dst_folder, img)
+                shutil.copy2(src_path, dst_path)
 
-        # Quá trình sao chép ảnh sang thư mục test
-        for img in test_images:
-            src_path = os.path.join(class_source_path, img)
-            dst_path = os.path.join(class_test_path, img)
-            shutil.copy2(src_path, dst_path)
+        # Thực thi sao chép
+        copy_files(train_images, class_train_path)
+        copy_files(val_images, class_val_path)
+        copy_files(test_images, class_test_path)
 
-        print(f"[+] Đã xử lý lớp '{class_name}': {len(train_images)} ảnh (Train) | {len(test_images)} ảnh (Test)")
+        print(f"[+] Lớp '{class_name}': {len(train_images)} Train | {len(val_images)} Val | {len(test_images)} Test")
 
-    print("\n[*] Quá trình phân chia dữ liệu đã hoàn tất thành công!")
+    print("\n[*] Quá trình phân chia dữ liệu (Train/Val/Test) đã hoàn tất thành công!")
 
 
 # ==========================================
 # CẤU HÌNH ĐƯỜNG DẪN VÀ CHẠY CHƯƠNG TRÌNH
 # ==========================================
 if __name__ == '__main__':
-    # THAY ĐỔI 2 ĐƯỜNG DẪN DƯỚI ĐÂY CHO PHÙ HỢP VỚI MÁY TÍNH CỦA BẠN
-
     # 1. Thư mục chứa dữ liệu Kvasir vừa giải nén
-    SOURCE_DIRECTORY = r"D:\Study\PTIT\TKTT\TinyViT\kvasir-dataset-v2"
+    SOURCE_DIRECTORY = r"kvasir-dataset-v2"
 
-    # 2. Thư mục bạn muốn xuất kết quả (có thể lưu ra một thư mục mới hoàn toàn)
-    DESTINATION_DIRECTORY = r"D:\Study\PTIT\TKTT\TinyViT\kvasir-dataset-v2-split"
+    # 2. Thư mục bạn muốn xuất kết quả
+    DESTINATION_DIRECTORY = r"kvasir-dataset-v2-split"
 
+    # Chạy hàm chia dữ liệu với tỷ lệ 80% Train - 10% Val - 10% Test
     split_dataset(
         source_dir=SOURCE_DIRECTORY,
         dest_dir=DESTINATION_DIRECTORY,
-        split_ratio=0.8
+        train_ratio=0.8,
+        val_ratio=0.1
     )

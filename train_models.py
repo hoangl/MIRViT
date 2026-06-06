@@ -1,4 +1,6 @@
 import os
+import sys
+import datetime
 import numpy as np
 import torch
 import torch.nn as nn
@@ -9,7 +11,7 @@ from torchvision import datasets, transforms
 import timm
 
 os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
-os.environ["HF_TOKEN"] = "hf_xxxxxxxxxxxx"
+os.environ["HF_TOKEN"] = "hf_xxx"
 
 # =====================================================================
 # CẤU HÌNH EXPERIMENT CHUẨN BÀI BÁO (BỔ SUNG ViT-BASE)
@@ -22,16 +24,34 @@ EXPERIMENTS = [
     {"name": "Densenet121", "model_str": "densenet121", "loss_type": "Contrastive", "lam": 0.7},
     {"name": "Resnet50", "model_str": "resnet50", "loss_type": "Contrastive", "lam": 0.7},
     {"name": "MIRViT_small", "model_str": "vit_small_patch16_224", "loss_type": "Contrastive", "lam": 0.7},
-    {"name": "MIRViT_base", "model_str": "vit_base_patch16_224", "loss_type": "Contrastive", "lam": 0.7},  # BỔ SUNG
     {"name": "MIRdeit_small", "model_str": "deit_small_patch16_224", "loss_type": "Contrastive", "lam": 0.3},
+    {"name": "MedViT_T", "model_str": "medvit_small", "loss_type": "Contrastive", "lam": 0.7},
 
     # --- Cross Entropy ---
     {"name": "deit_small", "model_str": "deit_small_patch16_224", "loss_type": "Cross Entropy", "lam": 0.0},
     {"name": "ViT_small", "model_str": "vit_small_patch16_224", "loss_type": "Cross Entropy", "lam": 0.0},
-    {"name": "ViT_base", "model_str": "vit_base_patch16_224", "loss_type": "Cross Entropy", "lam": 0.0},  # BỔ SUNG
     {"name": "Densenet121", "model_str": "densenet121", "loss_type": "Cross Entropy", "lam": 0.0},
     {"name": "Resnet50", "model_str": "resnet50", "loss_type": "Cross Entropy", "lam": 0.0},
 ]
+
+
+# =====================================================================
+# CLASS HỖ TRỢ GHI LOG RA FILE VÀ CONSOLE CÙNG LÚC
+# =====================================================================
+class DualLogger(object):
+    def __init__(self, filename="training_log.txt"):
+        self.terminal = sys.stdout
+        # Mở file với chế độ 'a' (append) để nối tiếp dữ liệu, có mã hóa utf-8 để không lỗi font tiếng Việt
+        self.log = open(filename, "a", encoding="utf-8")
+
+    def write(self, message):
+        self.terminal.write(message)
+        self.log.write(message)
+
+    def flush(self):
+        # Đảm bảo dữ liệu được đẩy ngay lập tức ra màn hình và file
+        self.terminal.flush()
+        self.log.flush()
 
 
 # =====================================================================
@@ -42,7 +62,6 @@ class CrossBatchMemory:
         self.queue_size = queue_size
         self.embedding_dim = embedding_dim
         self.device = device
-        # Khởi tạo ma trận trống, không dùng randn để tránh rác ở các vòng lặp đầu
         self.features = torch.zeros(queue_size, embedding_dim, device=device)
         self.labels = torch.zeros(queue_size, dtype=torch.long, device=device) - 1
         self.ptr = 0
@@ -71,7 +90,6 @@ class CrossBatchMemory:
 def contrastive_loss(z, labels, memory_queue, margin=0.5):
     z = F.normalize(z, p=2, dim=1)
 
-    # Chỉ lấy các vector đã thực sự được nạp vào Queue
     if memory_queue.is_full:
         valid_features = memory_queue.features
         valid_labels = memory_queue.labels
@@ -81,8 +99,6 @@ def contrastive_loss(z, labels, memory_queue, margin=0.5):
         valid_labels = memory_queue.labels[:memory_queue.ptr]
 
     valid_features = F.normalize(valid_features, p=2, dim=1)
-
-    # Gộp ảnh của Lô hiện tại và ảnh trong Queue để đối chiếu chéo
     all_features = torch.cat([z, valid_features], dim=0)
     all_labels = torch.cat([labels, valid_labels], dim=0)
 
@@ -93,20 +109,18 @@ def contrastive_loss(z, labels, memory_queue, margin=0.5):
     for i in range(N):
         pos_mask = (all_labels == labels[i])
         neg_mask = (all_labels != labels[i])
-        pos_mask[i] = False  # Loại bỏ bản thân bức ảnh đó
+        pos_mask[i] = False
 
-        # Nhánh Positive (Kéo lại gần)
         pos_sims = similarity_matrix[i][pos_mask]
         if len(pos_sims) > 0:
             loss += torch.mean(1.0 - pos_sims)
 
-        # Nhánh Negative (Đẩy ra xa - KỸ THUẬT LỌC NHIỄU GRADIENT)
         neg_sims = similarity_matrix[i][neg_mask]
         if len(neg_sims) > 0:
             neg_loss = neg_sims - margin
-            active_neg_loss = neg_loss[neg_loss > 0]  # Chỉ lấy các mẫu vi phạm lề
+            active_neg_loss = neg_loss[neg_loss > 0]
             if len(active_neg_loss) > 0:
-                loss += torch.mean(active_neg_loss)  # Không bị loãng đạo hàm
+                loss += torch.mean(active_neg_loss)
 
     return loss / N
 
@@ -154,7 +168,7 @@ def evaluate_retrieval_all_metrics(embeddings, labels, k_list=[1, 5, 10]):
 # =====================================================================
 # HÀM HUẤN LUYỆN 1 LẦN CHẠY (SINGLE RUN)
 # =====================================================================
-def run_single_experiment(exp_config, train_loader, test_loader, test_dataset, train_dataset_size, device, run_idx,
+def run_single_experiment(exp_config, train_loader, val_loader, val_dataset, train_dataset_size, device, run_idx,
                           num_classes=8):
     loss_type = exp_config["loss_type"]
     model_str = exp_config["model_str"]
@@ -176,7 +190,6 @@ def run_single_experiment(exp_config, train_loader, test_loader, test_dataset, t
         else:
             embed_dim = dummy_out.shape[1]
 
-    # Tác giả: "Memory queue aligns with dataset's size"
     memory = CrossBatchMemory(queue_size=train_dataset_size, embedding_dim=embed_dim, device=device)
 
     model.train()
@@ -214,7 +227,7 @@ def run_single_experiment(exp_config, train_loader, test_loader, test_dataset, t
 
     all_embeddings, all_labels = [], []
     with torch.no_grad():
-        for images, labels in test_loader:
+        for images, labels in val_loader:
             images = images.to(device)
             with torch.amp.autocast('cuda'):
                 embeddings = model(images)
@@ -233,9 +246,10 @@ def run_single_experiment(exp_config, train_loader, test_loader, test_dataset, t
         os.makedirs(save_dir, exist_ok=True)
         safe_name = f"{loss_type.lower().replace(' ', '')}_{exp_config['name'].lower()}"
         torch.save(model.state_dict(), os.path.join(save_dir, f'{safe_name}.pth'))
-        db_image_paths = [sample[0] for sample in test_dataset.samples]
+
+        db_image_paths = [sample[0] for sample in val_dataset.samples]
         database_data = {'embeddings': db_embeddings, 'labels': db_labels, 'paths': db_image_paths,
-                         'class_names': test_dataset.classes}
+                         'class_names': val_dataset.classes}
         torch.save(database_data, os.path.join(save_dir, f'db_{safe_name}.pt'))
 
     return metrics
@@ -245,16 +259,25 @@ def run_single_experiment(exp_config, train_loader, test_loader, test_dataset, t
 # LUỒNG ĐIỀU KHIỂN CHÍNH
 # =====================================================================
 def main():
+    # KÍCH HOẠT GHI LOG RA FILE
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_filename = f"training_log_{timestamp}.txt"
+    sys.stdout = DualLogger(log_filename)
+
+    print("=" * 80)
+    print(f"[*] Toàn bộ log của phiên huấn luyện này sẽ được lưu tại: {log_filename}")
+    print("=" * 80)
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"[*] Đang khởi chạy hệ thống trên thiết bị: {device}")
 
     train_dir = r"kvasir-dataset-v2-split\train"
-    test_dir = r"kvasir-dataset-v2-split\test"
-    if not os.path.exists(train_dir) or not os.path.exists(test_dir):
-        print("[-] LỖI: Không tìm thấy thư mục dữ liệu.")
+    val_dir = r"kvasir-dataset-v2-split\val"
+
+    if not os.path.exists(train_dir) or not os.path.exists(val_dir):
+        print("[-] LỖI: Không tìm thấy thư mục dữ liệu train hoặc val.")
         return
 
-    # 1. DÀNH CHO TẬP TRAIN (Áp dụng đúng Data Augmentation của bài báo)
     train_transform = transforms.Compose([
         transforms.Resize((256, 256)),
         transforms.RandomCrop((224, 224)),
@@ -263,26 +286,25 @@ def main():
         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
     ])
 
-    # 2. DÀNH CHO TẬP TEST (Chỉ cắt chính giữa - Center Crop để giữ nguyên đặc trưng)
-    test_transform = transforms.Compose([
+    val_transform = transforms.Compose([
         transforms.Resize((256, 256)),
-        transforms.CenterCrop((224, 224)),  # Khác biệt ở đây: Cắt cố định ở giữa thay vì cắt ngẫu nhiên
+        transforms.CenterCrop((224, 224)),
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
     ])
 
     print("\n[*] Đang đọc và phân tích cấu trúc dữ liệu...")
-    # Nạp 2 bộ transform khác nhau cho 2 tập dữ liệu
+
     train_dataset = datasets.ImageFolder(root=train_dir, transform=train_transform)
-    test_dataset = datasets.ImageFolder(root=test_dir, transform=test_transform)
+    val_dataset = datasets.ImageFolder(root=val_dir, transform=val_transform)
     train_size = len(train_dataset)
 
     print(f"[+] Tổng số ảnh tập Huấn luyện (Train): {train_size} ảnh")
-    print(f"[+] Tổng số ảnh tập Kiểm thử/Cơ sở dữ liệu (Test): {len(test_dataset)} ảnh")
+    print(f"[+] Tổng số ảnh tập Xác thực/Cơ sở dữ liệu (Val): {len(val_dataset)} ảnh")
     print(f"[+] Danh sách các lớp bệnh lý ({len(train_dataset.classes)} lớp): {train_dataset.classes}")
 
     train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True, drop_last=True, num_workers=2)
-    test_loader = DataLoader(test_dataset, batch_size=32, shuffle=False, num_workers=2)
+    val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False, num_workers=2)
 
     final_summary = {}
 
@@ -297,7 +319,7 @@ def main():
         run_metrics = {k: [] for k in ['R@1', 'R@5', 'R@10', 'mAP', 'mP@1', 'mP@5', 'mP@10']}
 
         for run in range(1, NUM_RUNS + 1):
-            metrics = run_single_experiment(config, train_loader, test_loader, test_dataset, train_size, device, run,
+            metrics = run_single_experiment(config, train_loader, val_loader, val_dataset, train_size, device, run,
                                             len(train_dataset.classes))
             for k, v in metrics.items():
                 run_metrics[k].append(v)

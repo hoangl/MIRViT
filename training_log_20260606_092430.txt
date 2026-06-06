@@ -1,0 +1,15 @@
+================================================================================
+[*] Toàn bộ log của phiên huấn luyện này sẽ được lưu tại: training_log_20260606_092430.txt
+================================================================================
+[*] Đang khởi chạy hệ thống trên thiết bị: cuda
+
+[*] Đang đọc và phân tích cấu trúc dữ liệu...
+[+] Tổng số ảnh tập Huấn luyện (Train): 6400 ảnh
+[+] Tổng số ảnh tập Xác thực/Cơ sở dữ liệu (Val): 800 ảnh
+[+] Danh sách các lớp bệnh lý (8 lớp): ['dyed-lifted-polyps', 'dyed-resection-margins', 'esophagitis', 'normal-cecum', 'normal-pylorus', 'normal-z-line', 'polyps', 'ulcerative-colitis']
+
+================================================================================
+[*] BẮT ĐẦU HUẤN LUYỆN: Densenet121 | LOSS: Contrastive
+================================================================================
+   [Run 1/1] Iteration 200/10000 | Loss: 0.5898
+   [Run 1/1] Iteration 400/10000 | Loss: 0.5840
