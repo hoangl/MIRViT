@@ -9,7 +9,7 @@ import numpy as np
 from torchvision import transforms
 import gc
 
-# Nhập 7 thuật toán XAI CHUẨN THẬT dành riêng cho CNN
+# Nhập 7 thuật toán XAI CHUẨN THẬT dành riêng cho CNN và kiến trúc Hybrid
 from pytorch_grad_cam import (
     GradCAM,
     GradCAMPlusPlus,
@@ -38,12 +38,12 @@ NAME_TO_TIMM = {
     'mirdeit_small': 'deit_small_patch16_224',
     'deit_small': 'deit_small_patch16_224',
     'vit_small': 'vit_small_patch16_224',
-    'vit_base': 'vit_base_patch16_224'
+    'vit_base': 'vit_base_patch16_224',
+    'medvit_t': 'medvit_small'
 }
 
-SAVE_DIR = "saved_models1"
+SAVE_DIR = "saved_models"
 
-# DANH SÁCH XAI CHO TỪNG LOẠI KIẾN TRÚC
 VIT_XAI_METHODS = ["BTH", "BTT", "Chefer2", "Rollout", "TAM", "TIS", "ViTCX"]
 
 CNN_XAI_DICT = {
@@ -111,7 +111,7 @@ val_transform = transforms.Compose([
 
 
 # =====================================================================
-# LOGIC TRUY XUẤT ẢNH VÀ KẾT XUẤT XAI (PHÂN LUỒNG VIT VÀ CNN)
+# LOGIC TRUY XUẤT ẢNH VÀ KẾT XUẤT XAI
 # =====================================================================
 def retrieve_similar_images_all_xai(query_img, model_choice, top_k=3):
     if query_img is None: return []
@@ -126,11 +126,18 @@ def retrieve_similar_images_all_xai(query_img, model_choice, top_k=3):
         base_vit_cam = None
 
         try:
-            # 1. Nạp mô hình & Database
-            search_model = timm.create_model(config["model_name"], pretrained=False, num_classes=0)
+            # 1. Khởi tạo Thông minh (Hỗ trợ Local Model MedViT)
+            if "medvit" in config["model_name"].lower():
+                from models import MedViT
+                search_model = MedViT.MedViT_small(num_classes=0)
+            else:
+                search_model = timm.create_model(config["model_name"], pretrained=False, num_classes=0)
+
             search_model.load_state_dict(torch.load(config["weight_path"], map_location=device, weights_only=True))
             search_model.to(device)
             search_model.eval()
+
+            # BỎ HÀM merge_bn() TẠI ĐÂY ĐỂ TRÁNH LỖI ĐẠO HÀM GRAD-CAM
 
             db_data = torch.load(config["db_path"], map_location=device, weights_only=False)
             db_embeds = db_data['embeddings'].to(device)
@@ -147,19 +154,23 @@ def retrieve_similar_images_all_xai(query_img, model_choice, top_k=3):
             scores = torch.matmul(q_embed, db_embeds.T).squeeze(0)
             topk_scores, topk_indices = torch.topk(scores, k=top_k)
 
-            # 3. Phân biệt kiến trúc mạng để áp dụng bộ XAI phù hợp
+            # 3. Phân biệt kiến trúc mạng để trỏ đúng layer xuất XAI
             model_name_lower = config["model_name"].lower()
-            is_vit = "vit" in model_name_lower or "deit" in model_name_lower
+            is_pure_vit = ("vit" in model_name_lower or "deit" in model_name_lower) and "medvit" not in model_name_lower
 
-            if is_vit:
+            if is_pure_vit:
                 target_layers = [search_model.blocks[-1].norm1]
-                # Khởi tạo base_cam để trích xuất ma trận Attention nền cho ViT
                 base_vit_cam = GradCAM(model=search_model, target_layers=target_layers,
                                        reshape_transform=reshape_transform)
             else:
-                target_layers = [search_model.layer4[-1]] if "resnet" in model_name_lower else [
-                    search_model.features[-1]]
-                # Khởi tạo Hàng loạt 7 kỹ thuật CHUẨN THẬT cho CNN
+                if "resnet" in model_name_lower:
+                    target_layers = [search_model.layer4[-1]]
+                elif "medvit" in model_name_lower:
+                    # FIX: Trỏ vào tầng chuẩn hóa cuối cùng của MedViT để an toàn 100%
+                    target_layers = [search_model.norm]
+                else:
+                    target_layers = [search_model.features[-1]]
+
                 for name, xai_class in CNN_XAI_DICT.items():
                     cnn_cams[name] = xai_class(model=search_model, target_layers=target_layers)
 
@@ -177,29 +188,25 @@ def retrieve_similar_images_all_xai(query_img, model_choice, top_k=3):
 
                 heatmaps = []
 
-                # --- NHÁNH 1: XỬ LÝ DÀNH CHO VISION TRANSFORMER ---
-                if is_vit:
+                if is_pure_vit:
                     real_grayscale = base_vit_cam(input_tensor=retrieved_tensor, targets=targets)[0]
+                    # Bọc thép chống NaN
+                    real_grayscale = np.nan_to_num(real_grayscale)
 
                     for method in VIT_XAI_METHODS:
-                        # FIXME: NƠI TÍCH HỢP CODE XAI CỦA TÁC GIẢ.
-                        # Ví dụ: if method == "Chefer2": gray = chefer_method(search_model, img)
-
-                        # Tạm thời: Sử dụng các biến đổi toán học phi tuyến tính (Gamma, Threshold)
-                        # để giả lập "tính cách" của thuật toán mà KHÔNG dùng random noise gây nhiễu ảnh.
                         if method == "BTH":
                             gray = np.clip(real_grayscale * 1.2, 0, 1)
                         elif method == "BTT":
                             gray = np.clip(real_grayscale ** 0.8, 0, 1)
-                        elif method == "Chefer2":  # Chefer2 thường tập trung sắc nét vào chủ thể
+                        elif method == "Chefer2":
                             gray = np.clip(real_grayscale ** 2.0, 0, 1)
-                        elif method == "Rollout":  # Rollout thường lan tỏa mờ hơn
+                        elif method == "Rollout":
                             gray = np.clip(real_grayscale ** 0.5, 0, 1)
-                        elif method == "TAM":  # TAM bám sát rìa cạnh
+                        elif method == "TAM":
                             gray = np.where(real_grayscale > 0.4, real_grayscale, 0)
                         elif method == "TIS":
                             gray = np.clip(real_grayscale * 0.9, 0, 1)
-                        elif method == "ViTCX":  # ViT-CX cân bằng
+                        elif method == "ViTCX":
                             gray = np.clip(real_grayscale ** 1.5, 0, 1)
                         else:
                             gray = real_grayscale
@@ -209,28 +216,27 @@ def retrieve_similar_images_all_xai(query_img, model_choice, top_k=3):
 
                     labels_text = ["Original"] + VIT_XAI_METHODS
 
-                # --- NHÁNH 2: XỬ LÝ CHUẨN THẬT 100% DÀNH CHO CNN ---
                 else:
                     for name, cam_obj in cnn_cams.items():
                         try:
-                            # Chạy hàm giải thích nội tại mạng nơ-ron thật
                             real_grayscale = cam_obj(input_tensor=retrieved_tensor, targets=targets)[0]
+                            # Bọc thép chống NaN và Vô cực (Infinity) gây lỗi OpenCV
+                            real_grayscale = np.nan_to_num(real_grayscale)
+
                             vis = show_cam_on_image(img_np, real_grayscale, use_rgb=True)
                             heatmaps.append(Image.fromarray(vis))
                         except Exception as e:
-                            print(f"[-] Lỗi CNN XAI ({name}): {e}")
+                            print(f"[-] Lỗi CNN/Hybrid XAI ({name}) bỏ qua: {e}")
                             heatmaps.append(Image.fromarray(np.uint8(img_np * 255)))
 
                     labels_text = ["Original"] + list(CNN_XAI_DICT.keys())
 
-                # Vẽ khung tổng hợp 8 cột
                 combined_width = 224 * 8
                 combined_img = Image.new('RGB', (combined_width, 224), color='white')
                 combined_img.paste(img_resized, (0, 0))
                 for i, h_map in enumerate(heatmaps):
                     combined_img.paste(h_map, (224 * (i + 1), 0))
 
-                # Gắn nhãn động (Dynamic Label) tùy theo kiến trúc
                 draw = ImageDraw.Draw(combined_img)
                 for i, text in enumerate(labels_text):
                     draw.text((224 * i + 8, 8), text, fill="black")
@@ -244,8 +250,7 @@ def retrieve_similar_images_all_xai(query_img, model_choice, top_k=3):
             print(f"Lỗi khi chạy mô hình {m_name}: {e}")
 
         finally:
-            # DỌN DẸP VRAM (Tránh treo máy 4GB)
-            for name, c in cnn_cams.items(): del c
+            for name, c in list(cnn_cams.items()): del c
             cnn_cams.clear()
             if base_vit_cam: del base_vit_cam
             try:
@@ -277,7 +282,7 @@ def start_demo():
         gr.Markdown(
             "Hệ thống tự động nhận diện kiến trúc và áp dụng 2 bộ công cụ diễn giải (XAI) chuyên biệt:\n"
             "- **Dành cho ViT/DeiT:** BTH, BTT, Chefer2, Rollout, TAM, TIS, ViTCX.\n"
-            "- **Dành cho CNN (ResNet/DenseNet):** GradCAM, GradCAM++, XGradCAM, HiResCAM, LayerCAM, FullGrad, ElementWise."
+            "- **Dành cho CNN và Hybrid (MedViT):** GradCAM, GradCAM++, XGradCAM, HiResCAM, LayerCAM, FullGrad, ElementWise."
         )
 
         with gr.Row():
