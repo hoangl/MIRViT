@@ -11,10 +11,10 @@ from torchvision import datasets, transforms
 import timm
 
 os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
-os.environ["HF_TOKEN"] = "hf_xxx"
+os.environ["HF_TOKEN"] = "hf_xxxx"
 
 # =====================================================================
-# CẤU HÌNH EXPERIMENT CHUẨN BÀI BÁO (BỔ SUNG ViT-BASE)
+# CẤU HÌNH DANH SÁCH MODEL HUẤN LUYỆN ĐẨY METRIC
 # =====================================================================
 NUM_RUNS = 1
 TOTAL_ITERATIONS = 10000
@@ -38,7 +38,7 @@ EXPERIMENTS = [
 
 
 # =====================================================================
-# CLASS HỖ TRỢ GHI LOG RA FILE VÀ CONSOLE CÙNG LÚC
+# CLASS HỖ TRỢ GHI LOG RA FILE
 # =====================================================================
 class DualLogger(object):
     def __init__(self, filename="training_log.txt"):
@@ -57,7 +57,7 @@ class DualLogger(object):
 
 
 # =====================================================================
-# CÁC LỚP VÀ HÀM HỖ TRỢ LOSS (THUẬT TOÁN CHUẨN)
+# CÁC LỚP VÀ HÀM HỖ TRỢ HÀM MẤT MÁT (LOSS FUNCTION)
 # =====================================================================
 class CrossBatchMemory:
     def __init__(self, queue_size, embedding_dim, device='cuda'):
@@ -244,7 +244,7 @@ def run_single_experiment(exp_config, train_loader, val_loader, val_dataset, tra
     metrics = evaluate_retrieval_all_metrics(db_embeddings, db_labels)
 
     if run_idx == NUM_RUNS:
-        save_dir = "saved_models2"
+        save_dir = "saved_models"
         os.makedirs(save_dir, exist_ok=True)
         safe_name = f"{loss_type.lower().replace(' ', '')}_{exp_config['name'].lower()}"
         torch.save(model.state_dict(), os.path.join(save_dir, f'{safe_name}.pth'))
@@ -258,10 +258,9 @@ def run_single_experiment(exp_config, train_loader, val_loader, val_dataset, tra
 
 
 # =====================================================================
-# LUỒNG ĐIỀU KHIỂN CHÍNH
+# HÀM CHẠY CHÍNH
 # =====================================================================
 def main():
-    # KÍCH HOẠT GHI LOG RA FILE
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     log_filename = f"training_log_{timestamp}.txt"
     sys.stdout = DualLogger(log_filename)

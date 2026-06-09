@@ -1,6 +1,6 @@
 # 🏥 Hệ thống Truy xuất Ảnh Y tế (Medical Image Retrieval System)
 
-Dự án này triển khai và đánh giá các kiến trúc học sâu (Vision Transformer và CNN) cho bài toán Truy xuất Ảnh Y tế trên tập dữ liệu **Kvasir-v2**. Hệ thống thực hiện phân tích so sánh chi tiết giữa hai phương pháp huấn luyện: **Contrastive Learning** (Học đối chiếu) và **Cross Entropy** (Học phân loại), đi kèm với bộ công cụ XAI (Explainable AI) để diễn giải quyết định của mạng nơ-ron.
+Dự án này triển khai và đánh giá các kiến trúc học sâu bao gồm **CNN truyền thống**, **Vision Transformer (ViT)** và **Kiến trúc Lai (Hybrid - MedViT)** cho bài toán Truy xuất Ảnh Y tế trên tập dữ liệu **Kvasir-v2**. Hệ thống thực hiện phân tích so sánh chi tiết giữa hai phương pháp huấn luyện: **Contrastive Learning** (Học đối chiếu) và **Cross Entropy** (Học phân loại), đi kèm với bộ công cụ XAI (Explainable AI) đa luồng để diễn giải quyết định của mạng nơ-ron.
 
 ---
 
@@ -15,7 +15,12 @@ TinyViT/
 ├── kvasir-dataset-v2-split/    # Tập dữ liệu đã được chia tỷ lệ Train/Test
 ├── saved_models/               # Nơi lưu trữ trọng số (.pth) và cơ sở dữ liệu vector (.pt)
 │
-├── requirements.txt            # Danh sách các thư viện phụ thuộc
+├── models/                     # Thư mục chứa kiến trúc mạng cục bộ (Local Models)
+│   ├── MedViT.py               # Mã nguồn định nghĩa mạng MedViT (đã fix lỗi cho Retrieval)
+│   ├── utils.py                # Các hàm hỗ trợ tối ưu hóa và gộp Batch-Norm (merge_pre_bn)
+│   └── requirements.txt        # Thư viện phụ thuộc riêng cho MedViT (einops, fvcore...)
+│
+├── requirements.txt            # Danh sách các thư viện phụ thuộc của hệ thống chính
 ├── tool_split_dataset.py       # Mã nguồn chia tập dữ liệu (Train/Val/Test)
 ├── train_models.py             # Mã nguồn huấn luyện toàn bộ các mô hình
 └── demo_app.py                 # Giao diện Web UI (Gradio) để kiểm thử và trực quan hóa XAI
@@ -30,7 +35,7 @@ TinyViT/
 - **Hệ điều hành:** Windows 10 / Windows 11.
 - **Môi trường lập trình:** Tương thích tốt nhất với **Python 3.10** hoặc **3.11** (Lưu ý: Không dùng Python 3.12+ do một số thư viện PyTorch/XAI chưa hỗ trợ ổn định trên Windows).
 - **Phần cứng:** - RAM hệ thống: Tối thiểu 16GB.
-  - Card đồ họa (GPU): NVIDIA hỗ trợ CUDA với **tối thiểu 4GB VRAM** (Đã được cấu hình tối ưu riêng cho các dòng card phổ thông như RTX 3050 Ti).
+  - Card đồ họa (GPU): NVIDIA hỗ trợ CUDA với **tối thiểu 4GB VRAM** (Đã được cấu hình tối ưu luồng bộ nhớ tự động để chống tràn VRAM cho các dòng card phổ thông như RTX 3050).
 
 ---
 
@@ -50,20 +55,24 @@ TinyViT/
 **Bước 2: Cài đặt PyTorch với hỗ trợ GPU (CUDA)**
 Để tận dụng tối đa phần cứng NVIDIA trên Windows, bạn phải cài đặt PyTorch phiên bản hỗ trợ CUDA 11.8 trước tiên:
 ~~~bash
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+pip install torch torchvision torchaudio --index-url [https://download.pytorch.org/whl/cu118](https://download.pytorch.org/whl/cu118)
 ~~~
 
-**Bước 3: Cài đặt các thư viện AI phụ trợ**
-Mở cmd tại thư mục `TinyViT` và tiến hành cài đặt toàn bộ các thư viện đồ họa và máy học cần thiết (Quá trình này sẽ cài đặt trực tiếp vào hệ thống):
+**Bước 3: Cài đặt các thư viện AI phụ trợ (2 gói Requirements)**
+Mở cmd tại thư mục gốc `TinyViT` và tiến hành cài đặt lần lượt **thư viện hệ thống** và **thư viện cho Local Model**:
 ~~~bash
+# Cài đặt thư viện lõi của hệ thống (timm, gradio, grad-cam,...)
 pip install -r requirements.txt
+
+# Cài đặt thư viện chuyên biệt để khởi tạo mạng MedViT nội bộ
+pip install -r models\requirements.txt
 ~~~
-*(Danh sách `requirements.txt` cần đảm bảo có chứa: `timm`, `gradio`, `grad-cam`, `pillow`, `numpy`).*
 
 **Bước 4: Cấu hình Token tải mô hình (Hugging Face)**
 Hệ thống sử dụng thư viện `timm` để tự động tải các kiến trúc ViT/CNN. Mã nguồn đã được cấu hình sẵn biến môi trường Token, bạn không cần thao tác thêm:
 ~~~python
-os.environ["HF_TOKEN"] = "hf_xxxxxxxxxxxxxxxxx"
+import os
+os.environ["HF_TOKEN"] = "hf_xxxx"
 ~~~
 
 ---
@@ -87,8 +96,8 @@ Bắt đầu quá trình huấn luyện toàn bộ các mô hình bằng lệnh:
 ~~~bash
 python train_models.py
 ~~~
-**Mục đích:** - Tự động huấn luyện lần lượt các kiến trúc: DenseNet121, ResNet50, MIRViT_small, MIRViT_base, MIRdeit_small.
-- Cấu hình đã được chốt cứng: `batch_size=32`, `num_workers=2` (Đảm bảo an toàn tuyệt đối cho 4GB VRAM), với vòng lặp `10.000 Iterations` cho mỗi mô hình.
+**Mục đích:** - Tự động huấn luyện lần lượt các kiến trúc: `DenseNet121`, `ResNet50`, `MIRViT_small`, `MIRdeit_small`, và mạng cục bộ `MedViT_T`.
+- **Cấu hình thông minh:** Hệ thống tự động nhận diện mô hình để cấp phát bộ nhớ. Với CNN/ViT, `batch_size=32`. Riêng mạng lai `MedViT` phức tạp, hệ thống tự động giảm `batch_size=16` để bảo vệ an toàn cho VRAM 4GB.
 - Trọng số `.pth` và Database Vector `.pt` sẽ tự động được lưu vào thư mục `saved_models`.
 
 ### 3. Khởi chạy Giao diện Trực quan (Web UI Demo)
@@ -97,16 +106,16 @@ Sau khi quá trình huấn luyện hoàn tất ít nhất 1 mô hình, khởi ch
 python demo_app.py
 ~~~
 **Mục đích:**
-- Mở máy chủ Web tại địa chỉ `http://127.0.0.1:7860`.
-- Hệ thống tự động quét thư mục `saved_models` và cho phép nạp các mô hình đã huấn luyện lên giao diện.
+- Mở máy chủ Web tại địa chỉ `http://127.0.0.1:8081`.
+- Hệ thống tự động quét thư mục `saved_models` và nạp các mô hình đã huấn luyện lên giao diện. Mô hình cục bộ MedViT sẽ tự động kích hoạt hàm `merge_bn()` từ `utils.py` để tăng tốc độ tìm kiếm.
 - Tính năng **Tất cả mô hình (So sánh)** cho phép truy xuất và đối chiếu kết quả của nhiều thuật toán cùng lúc bằng cơ chế *Nạp - Xả VRAM liên tục* để chống tràn bộ nhớ.
-- Tự động sinh biểu đồ nhiệt (Heatmap) với 7 kỹ thuật XAI (BTH, BTT, Chefer2, Rollout, TAM, TIS, ViTCX) dựa trên lớp chú ý cuối cùng của mạng.
+- Tự động sinh biểu đồ nhiệt (Heatmap) XAI theo cấu trúc mạng lưới (hỗ trợ TIS/Rollout cho ViT và LayerCAM/GradCAM cho CNN).
 
 ---
 
 ## 🔍 Khắc phục sự cố thường gặp (Troubleshooting)
 
 - **Lỗi `ModuleNotFoundError`:** Do hệ thống cài Python Global, nếu máy tính của bạn cài nhiều bản Python cùng lúc (VD: 3.9 và 3.12), hãy chắc chắn bạn đang dùng đúng lệnh `pip` của bản 3.10/3.11. Lời khuyên là dùng lệnh: `python -m pip install -r requirements.txt`.
-- **Lỗi tràn bộ nhớ (CUDA Out of Memory):** Nếu GPU báo lỗi tràn VRAM (đặc biệt khi mở tab Demo), hãy kiểm tra Task Manager và tắt các ứng dụng ngầm đang chiếm dụng VRAM. Cơ chế `gc.collect()` trong file demo đã được thiết kế để tự động dọn rác bộ nhớ sau mỗi phiên truy vấn.
+- **Lỗi tràn bộ nhớ (CUDA Out of Memory):** Nếu GPU báo lỗi tràn VRAM (đặc biệt khi mở tab Demo so sánh tất cả mô hình), hãy kiểm tra Task Manager và tắt các ứng dụng ngầm đang chiếm dụng VRAM. Cơ chế `gc.collect()` và `torch.cuda.empty_cache()` trong file demo đã được thiết kế để tự động dọn rác bộ nhớ sau mỗi phiên truy vấn.
 - **Cảnh báo `triton not found` / `flop counting will not work`:** Đây là cảnh báo đặc thù của PyTorch 2.x trên hệ điều hành Windows khi không tìm thấy trình biên dịch Triton. Cảnh báo này **hoàn toàn vô hại**, không ảnh hưởng đến độ chính xác (mAP) cũng như luồng thực thi của mô hình.
 - **Hiển thị GPU 0% trong Task Manager:** Mặc định Windows hiển thị biểu đồ lõi 3D (dành cho xử lý đồ họa/Game). Để xem công suất huấn luyện AI thực sự, hãy bấm vào mục "3D" trong biểu đồ GPU của Task Manager và chuyển sang xem lõi "Cuda" hoặc "Compute", hoặc sử dụng lệnh `nvidia-smi` trong Command Prompt.
